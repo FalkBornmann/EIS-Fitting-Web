@@ -103,9 +103,7 @@ if (typeof document !== "undefined") {
     const visible = value("view") === "window" ? selected : points;
     const unit = value("currentUnit");
     const xLabel = polar() ? "Potential (mV)" : "Zeit (s)";
-    const yLabel = log() ? "log₁₀(|j| / (A/cm²))" : !polar() ? "Potential (mV)" :
-      area() > 0 && factor() ? "Stromdichte (A/cm²)" : "Strom (" + (unit || "Dateieinheit") + ")";
-    const left = 135, right = 1165, top = 32, bottom = 450;
+    const left = 170, right = 1165, top = 32, bottom = 450;
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (!visible.length || (log() && !(area() > 0 && factor()))) return;
@@ -114,7 +112,20 @@ if (typeof document !== "undefined") {
       return [min - pad, max + pad];
     }
     const [xmin, xmax] = padded(extent(visible, x));
-    const [ymin, ymax] = padded(extent(visible, y));
+    const hasZeros = log() && visible.some(point => point.i === 0);
+    const nonzero = log() ? visible.filter(point => point.i !== 0) : visible;
+    const [rawMin, rawMax] = nonzero.length ? extent(nonzero, y) : [-9, -9];
+    const floor = Math.min(-10, Math.floor(rawMin) - 1);
+    const [ymin, ymax] = log()
+      ? [hasZeros ? floor : Math.floor(rawMin), Math.max(Math.floor(rawMin) + 1, Math.ceil(rawMax))]
+      : padded([rawMin, rawMax]);
+    const normalized = polar() && area() > 0 && factor();
+    const peak = Math.max(Math.abs(rawMin), Math.abs(rawMax));
+    const units = [["A", 1], ["mA", 1e-3], ["µA", 1e-6], ["nA", 1e-9], ["pA", 1e-12]];
+    const [displayUnit, scale] = units.find(([, step]) => peak >= step) ?? units.at(-1);
+    const yScale = !polar() ? 1000 : normalized ? 1 / scale : factor() ? factor() * 1000 : 1;
+    const yLabel = log() ? "|j| (A/cm²) · logarithmisch" : !polar() ? "Potential (mV)" :
+      normalized ? "Stromdichte (" + displayUnit + "/cm²)" : "Strom (" + (unit ? "mA" : "Dateieinheit") + ")";
     const px = v => left + (v - xmin) / (xmax - xmin) * (right - left);
     const py = v => bottom - (v - ymin) / (ymax - ymin) * (bottom - top);
     ctx.font = "20px system-ui";
@@ -124,17 +135,30 @@ if (typeof document !== "undefined") {
     for (let tick = 0; tick <= 5; tick++) {
       const fraction = tick / 5;
       const gx = left + fraction * (right - left);
-      const gy = bottom - fraction * (bottom - top);
       ctx.beginPath();
       ctx.moveTo(gx, top);
       ctx.lineTo(gx, bottom);
-      ctx.moveTo(left, gy);
-      ctx.lineTo(right, gy);
       ctx.stroke();
       ctx.textAlign = "center";
       ctx.fillText(show((xmin + fraction * (xmax - xmin)) * (polar() ? 1000 : 1)), gx, bottom + 28);
-      ctx.textAlign = "right";
-      ctx.fillText(show((ymin + fraction * (ymax - ymin)) * (polar() ? 1 : 1000)), left - 9, gy + 6);
+    }
+    const ticks = log()
+      ? Array.from({ length: ymax - ymin + 1 }, (_, index) => ymin + index)
+      : Array.from({ length: 6 }, (_, index) => ymin + index / 5 * (ymax - ymin));
+    const exponent = value => String(value).replace(/[\d-]/g, digit => "⁰¹²³⁴⁵⁶⁷⁸⁹⁻"[digit === "-" ? 10 : Number(digit)]);
+    ctx.textAlign = "right";
+    for (const tick of ticks) {
+      const gy = py(tick);
+      ctx.beginPath();
+      ctx.moveTo(left, gy);
+      ctx.lineTo(right, gy);
+      ctx.stroke();
+      const label = log() ? (hasZeros && tick === floor ? "0*" : "10" + exponent(tick)) : show(tick * yScale);
+      ctx.fillText(label, left - 9, gy + 6);
+    }
+    if (hasZeros) {
+      ctx.textAlign = "left";
+      ctx.fillText("* Nullwerte an der Darstellungsgrenze", left, 24);
     }
     ctx.textAlign = "center";
     ctx.fillText(xLabel, (left + right) / 2, 520);
@@ -153,7 +177,7 @@ if (typeof document !== "undefined") {
     visible.forEach((point, index) => {
       const method = index && (value("view") !== "window" ||
         point.index === visible[index - 1].index + 1) ? "lineTo" : "moveTo";
-      ctx[method](px(x(point)), py(y(point)));
+      ctx[method](px(x(point)), py(hasZeros && point.i === 0 ? floor : y(point)));
     });
     ctx.stroke();
     ctx.fillStyle = "#00736f";
