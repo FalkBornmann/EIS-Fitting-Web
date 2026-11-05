@@ -20,19 +20,27 @@ function parseCurve(text) {
     if (type === "TE") return { t: values[0], e: values[1] };
     return { e: values[0], i: values[1], t: values[2] };
   });
-  return { type, points };
+  return { type, points, suggestedArea: Number(lines[5]?.trim().replace(",", ".")) };
 }
 
-function regression(points, x) {
+function regression(points, x, y = point => point.e) {
   const average = getter => points.reduce((sum, point) => sum + getter(point), 0) / points.length;
   const meanX = average(x);
-  const meanE = average(point => point.e);
+  const meanE = average(y);
   const xx = average(point => (x(point) - meanX) ** 2);
-  const ee = average(point => (point.e - meanE) ** 2);
-  const xe = average(point => (x(point) - meanX) * (point.e - meanE));
+  const ee = average(point => (y(point) - meanE) ** 2);
+  const xe = average(point => (x(point) - meanX) * (y(point) - meanE));
   const slope = points.length > 1 && xx > 0 ? xe / xx : NaN;
   return { meanE, slope, r2: xx > 0 && ee > 0 ? xe ** 2 / (xx * ee) : NaN,
     predict: value => meanE + slope * (value - meanX) };
+}
+
+function tafelFit(points, lower, upper, sign, ordinate) {
+  const window = points.filter(point => point.e >= lower && point.e <= upper && point.i * sign > 0);
+  if (window.length < 3) return null;
+  const fit = regression(window, point => point.e, ordinate);
+  if (!(fit.slope * sign > 0) || !Number.isFinite(fit.r2)) return null;
+  return { ...fit, lower, upper, beta: 1000 / Math.abs(fit.slope) };
 }
 
 if (typeof document !== "undefined") {
@@ -47,9 +55,17 @@ if (typeof document !== "undefined") {
   const ctx = canvas.getContext("2d");
   let curve, selected, fileName;
   let loadVersion = 0;
-  const polar = () => value("mode") === "polar";
-  const x = point => polar() ? point.i : point.t;
-  const rangeKey = point => polar() ? point.e : point.t;
+  const polar = () => value("mode") !== "time";
+  const log = () => value("mode") === "tafel";
+  const area = () => number("area") * areaFactors[value("areaUnit")];
+  const factor = () => currentFactors[value("currentUnit")];
+  const density = point => point.i * factor() / area();
+  const x = point => polar() ? point.e : point.t;
+  const y = point => {
+    if (!polar()) return point.e;
+    if (log()) return point.i === 0 ? -10 : Math.log10(Math.abs(density(point)));
+    return area() > 0 && factor() ? density(point) : point.i;
+  };
 
   function extent(points, getter) {
     let min = Infinity, max = -Infinity;
@@ -62,7 +78,7 @@ if (typeof document !== "undefined") {
   }
 
   function reset() {
-    const [min, max] = extent(curve.points, rangeKey);
+    const [min, max] = extent(curve.points, x);
     get("lower").value = min;
     get("upper").value = max;
     get("first").value = 1;
@@ -71,20 +87,22 @@ if (typeof document !== "undefined") {
     render();
   }
 
-  function draw(points, fit) {
+  function draw(points, fits, corrosion) {
     const visible = value("view") === "window" ? selected : points;
     const unit = value("currentUnit");
-    const xLabel = polar() ? "Strom (" + (unit || "Dateieinheit") + ")" : "Zeit (s)";
+    const xLabel = polar() ? "Potential (V)" : "Zeit (s)";
+    const yLabel = log() ? "log₁₀(|j| / (A/cm²))" : !polar() ? "Potential (V)" :
+      area() > 0 && factor() ? "Stromdichte (A/cm²)" : "Strom (" + (unit || "Dateieinheit") + ")";
     const left = 135, right = 1165, top = 32, bottom = 450;
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    if (!visible.length) return;
+    if (!visible.length || (log() && !(area() > 0 && factor()))) return;
     function padded([min, max]) {
       const pad = (max - min) * 0.05 || Math.max(Math.abs(min) * 0.05, 1e-9);
       return [min - pad, max + pad];
     }
     const [xmin, xmax] = padded(extent(visible, x));
-    const [ymin, ymax] = padded(extent(visible, point => point.e));
+    const [ymin, ymax] = padded(extent(visible, y));
     const px = v => left + (v - xmin) / (xmax - xmin) * (right - left);
     const py = v => bottom - (v - ymin) / (ymax - ymin) * (bottom - top);
     ctx.font = "20px system-ui";
@@ -111,31 +129,62 @@ if (typeof document !== "undefined") {
     ctx.save();
     ctx.translate(23, (top + bottom) / 2);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText("Potential (V)", 0, 0);
+    ctx.fillText(yLabel, 0, 0);
     ctx.restore();
     ctx.save();
     ctx.beginPath();
     ctx.rect(left, top, right - left, bottom - top);
     ctx.clip();
-    ctx.strokeStyle = "#085b79";
+    ctx.strokeStyle = "#1746bc";
     ctx.lineWidth = 2;
     ctx.beginPath();
     visible.forEach((point, index) => {
       const method = index && (value("view") !== "window" ||
         point.index === visible[index - 1].index + 1) ? "lineTo" : "moveTo";
-      ctx[method](px(x(point)), py(point.e));
+      ctx[method](px(x(point)), py(y(point)));
     });
     ctx.stroke();
     ctx.fillStyle = "#00736f";
-    for (const point of selected) ctx.fillRect(px(x(point)) - 2, py(point.e) - 2, 4, 4);
-    if (Number.isFinite(fit?.slope)) {
-      const [start, end] = extent(selected, x);
+    if (!log() && selected.length < visible.length) {
+      for (const point of selected) ctx.fillRect(px(x(point)) - 2, py(y(point)) - 2, 4, 4);
+    }
+    for (const fit of fits) {
+      const start = fit.lower ?? extent(selected, x)[0];
+      const end = fit.upper ?? extent(selected, x)[1];
       ctx.strokeStyle = "#ac471c";
       ctx.setLineDash([8, 5]);
       ctx.beginPath();
       ctx.moveTo(px(start), py(fit.predict(start)));
       ctx.lineTo(px(end), py(fit.predict(end)));
       ctx.stroke();
+    }
+    if (log()) {
+      ctx.setLineDash([4, 5]);
+      ctx.strokeStyle = "#00736f";
+      ctx.fillStyle = "#00736f";
+      ctx.font = "16px system-ui";
+      ctx.textAlign = "left";
+      const markers = [
+        [number("passivation"), "E Passivierung", true],
+        [number("transpassive"), "E transpassiv", true],
+        [Math.log10(number("passive")), "j passiv", false],
+        [Math.log10(number("limiting")), "j Grenzstrom", false]
+      ];
+      for (const [position, label, vertical] of markers) {
+        if (!Number.isFinite(position)) continue;
+        const gx = vertical ? px(position) : left;
+        const gy = vertical ? top : py(position);
+        ctx.beginPath();
+        ctx.moveTo(gx, gy);
+        ctx.lineTo(vertical ? gx : right, vertical ? bottom : gy);
+        ctx.stroke();
+        ctx.fillText(label, gx + 5, vertical ? top + 20 : gy - 5);
+      }
+      if (corrosion) {
+        ctx.beginPath();
+        ctx.arc(px(corrosion.e), py(corrosion.logJ), 5, 0, 2 * Math.PI);
+        ctx.fill();
+      }
     }
     ctx.restore();
   }
@@ -145,41 +194,75 @@ if (typeof document !== "undefined") {
     get("lowerLabel").textContent = limits + " von";
     get("upperLabel").textContent = limits + " bis";
     get("polarOptions").hidden = !polar();
+    get("stern").hidden = !polar() || log();
+    get("tafelOptions").hidden = !log();
+    get("fitHint").textContent = log() ? "Für die Darstellung wie in VoltaMaster gib die exponierte Fläche ein." :
+      "Wähle einen linearen Bereich um den Stromnulldurchgang. Bei mehreren Durchläufen begrenze die Auswahl auf einen Zweig.";
     const lower = number("lower"), upper = number("upper");
     const first = number("first"), last = number("last");
-    selected = curve.points.filter(point => rangeKey(point) >= lower && rangeKey(point) <= upper &&
+    selected = curve.points.filter(point => x(point) >= lower && x(point) <= upper &&
       (!polar() || (point.index >= first && point.index <= last)));
-    const fit = selected.length ? regression(selected, x) : null;
+    const fit = selected.length && !log() ? regression(selected, x, y) : null;
     const details = [selected.length + " Messpunkte ausgewählt"];
     if (!selected.length) details.push("Prüfe die Grenzen des Auswertefensters.");
     if (fit && !polar()) {
       details.push("Mittelwert " + show(fit.meanE * 1000) + " mV",
         "Drift " + show(fit.slope * 60000) + " mV/min");
     }
-    let displayFit = fit;
+    const fits = [];
+    let corrosion;
+    if (!polar() && Number.isFinite(fit?.slope)) fits.push(fit);
     if (fit && polar()) {
-      const [min, max] = extent(selected, x);
-      const factor = currentFactors[value("currentUnit")];
-      const resistance = fit.slope / factor;
+      const [min, max] = extent(selected, point => point.i);
+      const resistance = area() > 0 ? 1 / (fit.slope * area()) : 1 / (fit.slope * factor());
       if (min >= 0 || max <= 0 || selected.length < 3) {
         details.push("Für Rₚ mindestens drei Punkte und beide Stromvorzeichen auswählen.");
-        displayFit = null;
-      } else if (!factor) {
+      } else if (!factor()) {
         details.push("Für Rₚ die Stromeinheit aus dem Messprogramm wählen.");
       } else if (!(resistance > 0 && Number.isFinite(resistance))) {
         details.push("Die Auswahl ergibt keinen positiven Polarisationswiderstand.");
       } else {
-        details.push("Rₚ " + show(resistance) + " Ω", "E bei I = 0: " + show(fit.predict(0)) + " V");
-        const area = number("area") * areaFactors[value("areaUnit")];
-        if (area > 0) details.push("Rₚ × Fläche " + show(resistance * area) + " Ω·cm²");
-        else if (value("area")) details.push("Die exponierte Fläche muss positiv sein.");
+        fits.push(fit);
+        details.push("Rₚ " + show(resistance) + " Ω", "E bei I = 0 " + show(-fit.predict(0) / fit.slope) + " V",
+          "R² " + show(fit.r2));
+        if (area() > 0) {
+          const normalized = resistance * area();
+          details.push("Rₚ × Fläche " + show(normalized) + " Ω·cm²");
+          const a = number("betaA") / 1000, c = number("betaC") / 1000;
+          if (a > 0 && c > 0) {
+            const b = a * c / (Math.LN10 * (a + c));
+            details.push("Stern–Geary B " + show(b * 1000) + " mV", "jₖₒᵣᵣ " + show(b / normalized) + " A/cm²");
+          }
+        } else if (value("area")) details.push("Die exponierte Fläche muss positiv sein.");
       }
-      if (displayFit) details.push("R² " + show(fit.r2));
+    }
+    if (log()) {
+      if (!(area() > 0 && factor())) {
+        details.push("Für die Stromdichte Stromeinheit und positive Fläche angeben.");
+      } else {
+        const cathode = tafelFit(selected, number("cMin"), number("cMax"), -1, y);
+        const anode = tafelFit(selected, number("aMin"), number("aMax"), 1, y);
+        for (const [name, branch] of [["kathodisch", cathode], ["anodisch", anode]]) {
+          if (!branch) continue;
+          fits.push(branch);
+          details.push("β " + name + " " + show(branch.beta) + " mV/Dekade (R² " + show(branch.r2) + ")");
+        }
+        if (cathode && anode) {
+          const e = (cathode.predict(0) - anode.predict(0)) / (anode.slope - cathode.slope);
+          const logJ = anode.predict(e);
+          if (e >= cathode.upper && e <= anode.lower && Number.isFinite(10 ** logJ) && 10 ** logJ > 0) {
+            corrosion = { e, logJ };
+            fits[0] = { ...cathode, upper: e };
+            fits[1] = { ...anode, lower: e };
+            details.push("Eₖₒᵣᵣ " + show(e) + " V", "jₖₒᵣᵣ " + show(10 ** logJ) + " A/cm²");
+          } else details.push("Der Schnittpunkt liegt außerhalb des Bereichs zwischen den Fitfenstern.");
+        } else details.push("Je Zweig mindestens drei Punkte mit passendem Vorzeichen und passender Steigung auswählen.");
+      }
     }
     get("result").textContent = details.join(" · ");
     get("csv").disabled = !selected.length;
-    get("png").disabled = value("view") === "window" && !selected.length;
-    draw(curve.points, displayFit);
+    get("png").disabled = (value("view") === "window" && !selected.length) || (log() && !(area() > 0 && factor()));
+    draw(curve.points, fits, corrosion);
   }
 
   get("file").addEventListener("change", async () => {
@@ -197,9 +280,16 @@ if (typeof document !== "undefined") {
       curve.points.forEach((point, index) => { point.index = index + 1; });
       fileName = file.name.replace(/\.crv$/i, "");
       get("mode").options[1].disabled = curve.type === "TE";
-      get("mode").value = "time";
-      get("currentUnit").value = "";
+      get("mode").options[2].disabled = curve.type === "TE";
+      const [minPotential, maxPotential] = extent(curve.points, point => point.e);
+      get("mode").value = curve.type === "TE" ? "time" : maxPotential - minPotential <= 0.12 ? "polar" : "tafel";
+      get("currentUnit").value = curve.type === "EIT" ? "A" : "";
       get("area").value = "";
+      get("headerArea").hidden = curve.type !== "EIT" || !(curve.suggestedArea > 0);
+      get("headerArea").textContent = show(curve.suggestedArea) + " cm² aus Dateikopf übernehmen";
+      get("ocp").value = "";
+      get("autoStatus").textContent = "";
+      for (const id of ["cMin", "cMax", "aMin", "aMax", "passivation", "transpassive", "passive", "limiting"]) get(id).value = "";
       get("status").textContent = file.name + " · " + curve.type + " · " + curve.points.length + " Messpunkte";
       get("analysis").hidden = false;
       reset();
@@ -219,7 +309,45 @@ if (typeof document !== "undefined") {
 
   get("mode").addEventListener("change", reset);
   get("reset").addEventListener("click", reset);
-  for (const id of ["lower", "upper", "first", "last", "view", "currentUnit", "area", "areaUnit"]) {
+  get("headerArea").addEventListener("click", () => {
+    get("areaUnit").value = "cm²";
+    get("area").value = curve.suggestedArea;
+    render();
+  });
+  get("findTafel").addEventListener("click", () => {
+    const ocp = number("ocp");
+    const zone = number("zone") / 1000;
+    const width = number("segment") / 1000;
+    const status = get("autoStatus");
+    if (!(area() > 0 && factor() && Number.isFinite(ocp) && width > 0 && zone > width)) {
+      status.textContent = "Fläche und OCP eingeben. Die Segmentbreite muss kleiner als die Suchzone sein.";
+      return;
+    }
+    const find = (min, max, sign) => {
+      const points = selected.filter(point => point.i * sign > 0 && point.e >= min && point.e <= max);
+      let best;
+      for (const { e: start } of points) {
+        if (start + width > max + 1e-12) continue;
+        const fit = tafelFit(points, start, start + width, sign, y);
+        if (fit && (!best || fit.r2 > best.r2)) best = fit;
+      }
+      return best;
+    };
+    const cathode = find(ocp - zone, ocp, -1);
+    const anode = find(ocp, ocp + zone, 1);
+    if (!cathode || !anode) {
+      status.textContent = "In der Auswahl wurden keine zwei geeigneten Segmente gefunden.";
+      return;
+    }
+    for (const [prefix, fit] of [["c", cathode], ["a", anode]]) {
+      get(prefix + "Min").value = fit.lower;
+      get(prefix + "Max").value = fit.upper;
+    }
+    status.textContent = "Fenster nach R² vorgeschlagen. Prüfe, ob beide Segmente im Tafelbereich liegen.";
+    render();
+  });
+  for (const id of ["lower", "upper", "first", "last", "view", "currentUnit", "area", "areaUnit",
+    "betaA", "betaC", "cMin", "cMax", "aMin", "aMax", "passivation", "transpassive", "passive", "limiting"]) {
     get(id).addEventListener("input", render);
   }
   get("csv").addEventListener("click", () => {

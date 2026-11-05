@@ -24,20 +24,52 @@ output{display:block;margin:12px 0;font-weight:650}p{line-height:1.5}
 <section id="analysis" hidden>
 <h2>Kurve auswerten</h2>
 <div class="row">
-<label>Darstellung<select id="mode"><option value="time">Potential über Zeit</option><option value="polar">Potential über Strom</option></select></label>
+<label>Auswertung<select id="mode"><option value="time">Ruhepotential über Zeit</option><option value="polar">Lineare Polarisation · Rₚ</option><option value="tafel">Logarithmische Polarisation · Tafel</option></select></label>
 <label><span id="lowerLabel"></span><input id="lower" type="number" step="any"></label>
 <label><span id="upperLabel"></span><input id="upper" type="number" step="any"></label>
 <button id="reset" type="button">Gesamter Bereich</button>
 <label><span>Diagramm</span><select id="view"><option value="all">Gesamte Kurve</option><option value="window">Auswahl vergrößern</option></select></label>
 </div>
 <div id="polarOptions" hidden>
-<p>Wähle den annähernd linearen Bereich nahe dem Nulldurchgang des Stroms. Bei mehreren Durchläufen begrenze den Fit auf einen Zweig.</p>
+<p id="fitHint"></p>
 <div class="row">
 <label>Stromeinheit der Datei<select id="currentUnit"><option value="">Bitte wählen</option><option>A</option><option>mA</option><option>µA</option><option>nA</option></select></label>
 <label>Exponierte Fläche (optional)<input id="area" type="number" step="any" min="0"></label>
 <label>Flächeneinheit<select id="areaUnit"><option>cm²</option><option>mm²</option><option>m²</option></select></label>
+<button id="headerArea" type="button" hidden>Flächenvorschlag übernehmen</button>
 <label>Erster Messpunkt<input id="first" type="number" step="1" min="1"></label>
 <label>Letzter Messpunkt<input id="last" type="number" step="1" min="1"></label>
+</div>
+<div id="stern" hidden>
+<p>Stern–Geary verwendet die Beträge der Tafelsteigungen. Für Versuch 1 sind 100 mV/Dekade voreingestellt. Hier kannst du auch die experimentell bestimmten Steigungen eintragen.</p>
+<div class="row">
+<label>β anodisch (mV/Dekade)<input id="betaA" type="number" min="0" step="any" value="100"></label>
+<label>β kathodisch (mV/Dekade)<input id="betaC" type="number" min="0" step="any" value="100"></label>
+</div></div>
+<div id="tafelOptions" hidden>
+<p>Wähle zwei getrennte, geradlinige Potentialfenster im aktiven Bereich. Die Auswertung verwendet negative Ströme für den kathodischen und positive Ströme für den anodischen Fit. Nullwerte erscheinen im Diagramm bei −10 und bleiben aus dem Fit ausgeschlossen.</p>
+<div class="row">
+<label>Kathodisch von (V)<input id="cMin" type="number" step="any"></label>
+<label>Kathodisch bis (V)<input id="cMax" type="number" step="any"></label>
+<label>Anodisch von (V)<input id="aMin" type="number" step="any"></label>
+<label>Anodisch bis (V)<input id="aMax" type="number" step="any"></label>
+</div>
+<div class="row">
+<label>OCP (V)<input id="ocp" type="number" step="any"></label>
+<label>Suchzone ± (mV)<input id="zone" type="number" min="0" value="100"></label>
+<label>Segmentbreite (mV)<input id="segment" type="number" min="0" value="50"></label>
+<button id="findTafel" type="button">Fitfenster vorschlagen</button>
+</div>
+<p id="autoStatus" role="status"></p>
+<details>
+<summary>Passivierung und Grenzstrom markieren</summary>
+<p>Trage die aus der Kurve abgelesenen Kennwerte ein. Die Markierungen erscheinen im Diagramm und im PNG.</p>
+<div class="row">
+<label>Passivierungspotential (V)<input id="passivation" type="number" step="any"></label>
+<label>Transpassives Potential (V)<input id="transpassive" type="number" step="any"></label>
+<label>Passive Stromdichte (A/cm²)<input id="passive" type="number" min="0" step="any"></label>
+<label>Grenzstromdichte (A/cm²)<input id="limiting" type="number" min="0" step="any"></label>
+</div></details>
 </div></div>
 <output id="result" aria-live="polite"></output>
 <canvas id="plot" width="1200" height="540" role="img" aria-label="Diagramm der Messkurve"></canvas>
