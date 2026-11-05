@@ -30,12 +30,13 @@ self.onmessage = async ({data}) => {
     py.globals.set("components", data.components);
     py.globals.set("limit", data.limit);
     py.globals.set("example", data.example);
+    py.globals.set("circuit_json", JSON.stringify(data.topology));
     const result = py.runPython(`
 import json
 from pathlib import Path
 from fitting import analyze
 try:
-    result_json = json.dumps(analyze(Path("measurement.bin").read_bytes(), suffix, components, limit, example), allow_nan=False)
+    result_json = json.dumps(analyze(Path("measurement.bin").read_bytes(), suffix, components, limit, example, json.loads(circuit_json)), allow_nan=False)
 except (ValueError, TypeError) as exc:
     result_json = json.dumps({"error": str(exc)})
 result_json

@@ -6,12 +6,16 @@
 :root{font:16px system-ui;color:#132c3c;background:#eef4f7;--blue:#085b79;--muted:#4b6473}
 *{box-sizing:border-box}body{margin:0}header{background:#123548;color:white;padding:30px max(20px,calc((100% - 1140px)/2));white-space:normal}header p{margin:0;color:#bfe7ec}h1{margin:.2em 0;font-size:2.7rem}main{max-width:1180px;margin:auto;padding:22px}section{background:white;border:1px solid #d7e3ea;border-radius:14px;padding:20px;margin-bottom:16px}h2,h3{margin:0 0 12px}p{line-height:1.55}button,input,select{font:inherit}button{background:var(--blue);color:white;border:0;padding:9px 15px;border-radius:8px;cursor:pointer}button:disabled{opacity:.55;cursor:wait}label{font-weight:600}.actions,.plots{display:flex;gap:14px;flex-wrap:wrap;align-items:center}.plots figure{flex:1 1 420px;margin:0}.plots svg{width:100%;height:auto}table{border-collapse:collapse;width:100%}td,th{text-align:left;border-bottom:1px solid #d7e3ea;padding:8px}small,#status{color:var(--muted)}details{margin-top:12px}summary{cursor:pointer}figure h3{font-size:1rem}#results[hidden]{display:none}
 </style>
+<style>
+.editor-branch{padding:9px 0}.editor-children{border-left:2px solid #c8dce5;margin:8px 0 0 8px;padding-left:12px}.editor-action{background:#e6f0f5;color:#16445a;font-size:.86rem;padding:6px 9px}.editor-branch .actions{gap:6px}footer{color:#4b6473;border-top:1px solid #cbdbe4;padding:14px 0;font-size:.9rem}footer a{color:#085b79}
+</style>
 <header><p>LABORWERKZEUG · ELEKTROCHEMIE</p><h1>EIS Fit</h1><p>Impedanzspektren laden, Ersatzschaltbilder vergleichen und Fits exportieren.</p></header>
 <main>
 <section><h2>1 · Messdatei auswählen</h2>
 <div class="actions"><label>Datei <input id="file" type="file" accept=".ism,.csv"></label>
 <button id="run">Datei fitten</button><button id="demo">Beispiel fitten</button></div>
-<fieldset style="margin:16px 0;border:1px solid #d7e3ea;border-radius:8px;padding:12px">
+<p><label>Fitmodus <select id="fit-mode"><option value="auto">Automatische Modellsuche</option><option value="custom">Eigenes Schaltbild</option></select></label></p>
+<fieldset id="auto-controls" style="margin:16px 0;border:1px solid #d7e3ea;border-radius:8px;padding:12px">
 <legend>Modellkomplexität</legend>
 <div class="actions">
 <label><input type="checkbox" name="component" value="R" checked> <span aria-hidden="true">─▭─</span> Widerstand (R)</label>
@@ -27,6 +31,12 @@
 </div>
 <p style="margin-bottom:0"><small id="available" aria-live="polite"></small></p>
 </fieldset>
+<fieldset id="custom-controls" hidden>
+<legend>Eigenes Schaltbild</legend>
+<p><small>Füge Bauteile in Reihe oder parallel hinzu. Der Fit verändert nur die Kennwerte. Bis zu zwölf Bauteile.</small></p>
+<div id="editor"></div>
+<div id="editor-preview" style="overflow:auto" aria-label="Schaltbildvorschau"></div>
+</fieldset>
 <p id="status" role="status">Zahner ISM oder CSV. Die Berechnung läuft auf diesem Rechner.</p>
 <details><summary>CSV-Format</summary><p>UTF-8, Komma als Trennzeichen, Dezimalpunkt. Spalten <code>frequency_Hz,Zreal_ohm,Zimag_ohm</code>. Kapazitive Impedanz hat einen negativen Imaginärteil.</p></details></section>
 <section id="results" hidden>
@@ -38,14 +48,29 @@
 <div class="plots" id="plots"></div>
 <p><small>Punkte zeigen Messwerte, Linien den Fit. Im Bode-Diagramm steht Türkis für |Z| und Blau für |Phase|.</small></p>
 </section>
+<footer>
+<p><a href="../" id="deck-link" hidden>Werkzeugdeck · Fokus Elektrochemie</a></p>
+<p><strong>Privates Projekt in Entwicklung</strong> · von einer Privatperson erstellt.</p>
+<details><summary>Nutzungshinweise und Haftung</summary>
+<p>Dieses Tool unterstützt das Lernen und die explorative Auswertung. Ergebnisse hängen von der Messqualität, dem gewählten Modell und der numerischen Anpassung ab. Prüfe Ergebnisse unabhängig, bevor du sie für Berichte, Freigaben oder sicherheitsrelevante Entscheidungen verwendest. Für Richtigkeit, Vollständigkeit, Verfügbarkeit und Eignung wird keine Garantie übernommen. Es gelten die gesetzlichen Haftungsregelungen.</p>
+<p>In der Onlineversion verarbeitet der Browser die Messdateien auf deinem Gerät. Beim ersten Fit lädt er die Rechenbibliotheken von jsDelivr. Beim Abruf der Seite und der Bibliotheken fallen bei den jeweiligen Anbietern technisch bedingte Verbindungsdaten an.</p>
+</details>
+</footer>
 </main>
 <script src="circuit-diagram.js"></script>
+<script src="circuit-editor.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 let result;
 let running = false;
 let worker;
-async function browserFit(file, suffix, allowed, limit, example) {
+const custom = () => $("fit-mode").value === "custom";
+const editor = createCircuitEditor($("editor"), $("editor-preview"), () => {
+  $("results").hidden = true;
+  $("status").textContent = "Schaltbild geändert. Starte den Fit erneut.";
+});
+$("deck-link").hidden = !document.querySelector('meta[name="werkzeugdeck"]');
+async function browserFit(file, suffix, allowed, limit, example, topology) {
   if (file && file.size > 2_000_000) throw new Error("Datei zu groß (maximal 2 MB).");
   const raw = file ? await file.arrayBuffer() : new ArrayBuffer(0);
   worker ??= new Worker("fit-worker.js");
@@ -60,7 +85,7 @@ async function browserFit(file, suffix, allowed, limit, example) {
       worker = undefined;
       reject(new Error("Das Rechenmodul konnte nicht geladen werden. Prüfe die Internetverbindung."));
     };
-    worker.postMessage({raw, suffix: suffix || "", components: allowed.join(","), limit, example}, [raw]);
+    worker.postMessage({raw, suffix: suffix || "", components: allowed.join(","), limit, example, topology}, [raw]);
   });
 }
 const components = [...document.querySelectorAll('input[name="component"]')];
@@ -73,8 +98,15 @@ function refresh() {
   const {allowed, limit} = options();
   $("available").textContent = allowed.length ? `Erlaubt: ${allowed.join(", ")} · bis ${limit} Bauteile in Reihen- und Parallelschaltungen. Typen dürfen sich wiederholen.` :
     "Wähle mindestens einen Bauteiltyp.";
-  $("run").disabled = $("demo").disabled = running || !allowed.length;
+  $("run").disabled = $("demo").disabled = running || (!custom() && !allowed.length);
 }
+$("fit-mode").onchange = () => {
+  $("auto-controls").hidden = custom();
+  $("custom-controls").hidden = !custom();
+  $("results").hidden = true;
+  $("status").textContent = "Wähle eine Messdatei oder starte den Beispielfit.";
+  refresh();
+};
 for (const control of [...components, $("limit")]) {
   control.addEventListener("change", () => {
     $("results").hidden = true;
@@ -85,10 +117,13 @@ for (const control of [...components, $("limit")]) {
 refresh();
 async function run(example) {
   const {allowed, limit} = options();
-  if (!allowed.length || running) return;
+  if ((!custom() && !allowed.length) || running) return;
+  const topology = custom() ? editor.topology() : null;
   const file = $("file").files[0];
   if (!example && !file) { $("status").textContent = "Bitte zuerst eine Datei auswählen."; return; }
   running = true;
+  $("fit-mode").disabled = true;
+  editor.lock(true);
   for (const control of [...components, $("limit")]) control.disabled = true;
   refresh();
   $("results").hidden = true;
@@ -96,9 +131,10 @@ async function run(example) {
   try {
     const suffix = file?.name.slice(file.name.lastIndexOf(".")).toLowerCase();
     if (document.querySelector('meta[name="eis-runtime"][content="browser"]')) {
-      result = await browserFit(example ? null : file, suffix, allowed, limit, example);
+      result = await browserFit(example ? null : file, suffix, allowed, limit, example, topology);
     } else {
       const headers = {"X-Components":allowed.join(","), "X-Element-Limit":String(limit)};
+      if (topology) headers["X-Circuit"] = JSON.stringify(topology);
       if (!example) headers["X-Spectrum-Type"] = suffix;
       const response = await fetch(example ? "/demo" : "/fit", {method:"POST", headers, body:example ? null : file});
       result = await response.json();
@@ -113,6 +149,8 @@ async function run(example) {
   } catch (error) { $("status").textContent = error.message; }
   finally {
     running = false;
+    $("fit-mode").disabled = false;
+    editor.lock(false);
     for (const control of [...components, $("limit")]) control.disabled = false;
     refresh();
   }

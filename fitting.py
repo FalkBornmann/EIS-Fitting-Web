@@ -4,7 +4,7 @@ import io
 import numpy as np
 from scipy.optimize import least_squares
 
-from circuits import search
+from circuits import fit_custom, search
 
 
 MODELS = {
@@ -121,9 +121,9 @@ def demo():
     return f, z * (1 + .002 * (rng.normal(size=len(f)) + 1j * rng.normal(size=len(f))))
 
 
-def analyze(raw, suffix, components, limit, example=False):
+def analyze(raw, suffix, components, limit, example=False, topology=None):
     if len(raw) > 2_000_000:
         raise ValueError("Datei zu groß (maximal 2 MB).")
     f, z = demo() if example else load_spectrum(raw, suffix)
-    return dict(f=f.tolist(), real=z.real.tolist(), imag=z.imag.tolist(),
-                fits=search(components, limit, f, z))
+    fits = search(components, limit, f, z) if topology is None else [fit_custom(topology, f, z)]
+    return dict(f=f.tolist(), real=z.real.tolist(), imag=z.imag.tolist(), fits=fits)

@@ -12,6 +12,7 @@ ELEMENTS = {
     "G": ("R", "tau"), "La": ("L", "n"),
 }
 MAX_ELEMENTS = 7
+MAX_CUSTOM_ELEMENTS = 12
 BEAM_WIDTH = 5
 
 
@@ -136,6 +137,35 @@ def _leaves(tree):
     else:
         for child in tree[1:]:
             yield from _leaves(child)
+
+
+def validate_custom(tree, point_count):
+    """Validate without sorting, flattening or simplifying the user's circuit."""
+    def visit(node, depth):
+        if depth > MAX_CUSTOM_ELEMENTS:
+            raise ValueError("Das Schaltbild ist zu tief verschachtelt.")
+        if isinstance(node, str) and node in ELEMENTS:
+            return node, 1, len(ELEMENTS[node])
+        if (not isinstance(node, (list, tuple)) or not 3 <= len(node) <= MAX_CUSTOM_ELEMENTS + 1
+                or node[0] not in ("s", "p")):
+            raise ValueError("Wähle gültige Bauteile. Jede Reihe oder Parallelschaltung braucht mindestens zwei Zweige.")
+        branches = [visit(branch, depth+1) for branch in node[1:]]
+        return (node[0], *(branch[0] for branch in branches)), sum(b[1] for b in branches), sum(b[2] for b in branches)
+
+    topology, count, parameters = visit(tree, 0)
+    if count > MAX_CUSTOM_ELEMENTS:
+        raise ValueError(f"Eigene Schaltbilder dürfen höchstens {MAX_CUSTOM_ELEMENTS} Bauteile enthalten.")
+    if 2 * point_count <= parameters + 1:
+        raise ValueError("Zu wenige Frequenzpunkte für die Zahl der freien Parameter.")
+    return topology
+
+
+def fit_custom(tree, f, z):
+    topology = validate_custom(tree, len(f))
+    result = fit_tree(topology, f, z, starts=9, max_evaluations=800)
+    if result is None:
+        raise ValueError("Für dieses Schaltbild wurde kein auswertbarer Fit gefunden.")
+    return result
 
 
 def search(components, limit, f, z):
