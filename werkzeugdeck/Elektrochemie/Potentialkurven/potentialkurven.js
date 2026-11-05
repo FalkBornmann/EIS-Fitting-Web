@@ -43,10 +43,19 @@ function tafelFit(points, lower, upper, sign, ordinate) {
   return { ...fit, lower, upper, beta: 1000 / Math.abs(fit.slope) };
 }
 
+function tafelIntersection(cathode, anode) {
+  const e = (cathode.predict(0) - anode.predict(0)) / (anode.slope - cathode.slope);
+  const logJ = anode.predict(e);
+  const current = 10 ** logJ;
+  return e >= cathode.upper && e <= anode.lower && Number.isFinite(current) && current > 0
+    ? { e, logJ } : null;
+}
+
 if (typeof document !== "undefined") {
   const get = id => document.getElementById(id);
   const value = id => get(id).value;
   const number = id => get(id).valueAsNumber;
+  const volts = id => number(id) / 1000;
   const format = new Intl.NumberFormat("de", { maximumSignificantDigits: 5 });
   const show = number => Number.isFinite(number) ? format.format(number) : "–";
   const currentFactors = { A: 1, mA: 1e-3, "µA": 1e-6, nA: 1e-9 };
@@ -79,8 +88,8 @@ if (typeof document !== "undefined") {
 
   function reset() {
     const [min, max] = extent(curve.points, x);
-    get("lower").value = min;
-    get("upper").value = max;
+    get("lower").value = polar() ? min * 1000 : min;
+    get("upper").value = polar() ? max * 1000 : max;
     get("first").value = 1;
     get("last").value = curve.points.length;
     get("view").value = "all";
@@ -90,8 +99,8 @@ if (typeof document !== "undefined") {
   function draw(points, fits, corrosion) {
     const visible = value("view") === "window" ? selected : points;
     const unit = value("currentUnit");
-    const xLabel = polar() ? "Potential (V)" : "Zeit (s)";
-    const yLabel = log() ? "log₁₀(|j| / (A/cm²))" : !polar() ? "Potential (V)" :
+    const xLabel = polar() ? "Potential (mV)" : "Zeit (s)";
+    const yLabel = log() ? "log₁₀(|j| / (A/cm²))" : !polar() ? "Potential (mV)" :
       area() > 0 && factor() ? "Stromdichte (A/cm²)" : "Strom (" + (unit || "Dateieinheit") + ")";
     const left = 135, right = 1165, top = 32, bottom = 450;
     ctx.fillStyle = "#fff";
@@ -120,9 +129,9 @@ if (typeof document !== "undefined") {
       ctx.lineTo(right, gy);
       ctx.stroke();
       ctx.textAlign = "center";
-      ctx.fillText(show(xmin + fraction * (xmax - xmin)), gx, bottom + 28);
+      ctx.fillText(show((xmin + fraction * (xmax - xmin)) * (polar() ? 1000 : 1)), gx, bottom + 28);
       ctx.textAlign = "right";
-      ctx.fillText(show(ymin + fraction * (ymax - ymin)), left - 9, gy + 6);
+      ctx.fillText(show((ymin + fraction * (ymax - ymin)) * (polar() ? 1 : 1000)), left - 9, gy + 6);
     }
     ctx.textAlign = "center";
     ctx.fillText(xLabel, (left + right) / 2, 520);
@@ -165,8 +174,8 @@ if (typeof document !== "undefined") {
       ctx.font = "16px system-ui";
       ctx.textAlign = "left";
       const markers = [
-        [number("passivation"), "E Passivierung", true],
-        [number("transpassive"), "E transpassiv", true],
+        [volts("passivation"), "E Passivierung", true],
+        [volts("transpassive"), "E transpassiv", true],
         [Math.log10(number("passive")), "j passiv", false],
         [Math.log10(number("limiting")), "j Grenzstrom", false]
       ];
@@ -190,15 +199,19 @@ if (typeof document !== "undefined") {
   }
 
   function render() {
-    const limits = polar() ? "Potential (V)" : "Zeit (s)";
+    const limits = polar() ? "Potential (mV)" : "Zeit (s)";
     get("lowerLabel").textContent = limits + " von";
     get("upperLabel").textContent = limits + " bis";
+    get("tailSetting").hidden = polar();
+    get("linearSetting").hidden = !polar() || log();
+    get("runAutomatic").disabled = !get("automatic").checked;
     get("polarOptions").hidden = !polar();
     get("stern").hidden = !polar() || log();
     get("tafelOptions").hidden = !log();
     get("fitHint").textContent = log() ? "Für die Darstellung wie in VoltaMaster gib die exponierte Fläche ein." :
       "Wähle einen linearen Bereich um den Stromnulldurchgang. Bei mehreren Durchläufen begrenze die Auswahl auf einen Zweig.";
-    const lower = number("lower"), upper = number("upper");
+    const readLimit = polar() ? volts : number;
+    const lower = readLimit("lower"), upper = readLimit("upper");
     const first = number("first"), last = number("last");
     selected = curve.points.filter(point => x(point) >= lower && x(point) <= upper &&
       (!polar() || (point.index >= first && point.index <= last)));
@@ -223,7 +236,7 @@ if (typeof document !== "undefined") {
         details.push("Die Auswahl ergibt keinen positiven Polarisationswiderstand.");
       } else {
         fits.push(fit);
-        details.push("Rₚ " + show(resistance) + " Ω", "E bei I = 0 " + show(-fit.predict(0) / fit.slope) + " V",
+        details.push("Rₚ " + show(resistance) + " Ω", "E bei I = 0 " + show(-1000 * fit.predict(0) / fit.slope) + " mV",
           "R² " + show(fit.r2));
         if (area() > 0) {
           const normalized = resistance * area();
@@ -240,21 +253,20 @@ if (typeof document !== "undefined") {
       if (!(area() > 0 && factor())) {
         details.push("Für die Stromdichte Stromeinheit und positive Fläche angeben.");
       } else {
-        const cathode = tafelFit(selected, number("cMin"), number("cMax"), -1, y);
-        const anode = tafelFit(selected, number("aMin"), number("aMax"), 1, y);
+        const cathode = tafelFit(selected, volts("cMin"), volts("cMax"), -1, y);
+        const anode = tafelFit(selected, volts("aMin"), volts("aMax"), 1, y);
         for (const [name, branch] of [["kathodisch", cathode], ["anodisch", anode]]) {
           if (!branch) continue;
           fits.push(branch);
           details.push("β " + name + " " + show(branch.beta) + " mV/Dekade (R² " + show(branch.r2) + ")");
         }
         if (cathode && anode) {
-          const e = (cathode.predict(0) - anode.predict(0)) / (anode.slope - cathode.slope);
-          const logJ = anode.predict(e);
-          if (e >= cathode.upper && e <= anode.lower && Number.isFinite(10 ** logJ) && 10 ** logJ > 0) {
-            corrosion = { e, logJ };
+          corrosion = tafelIntersection(cathode, anode);
+          if (corrosion) {
+            const { e, logJ } = corrosion;
             fits[0] = { ...cathode, upper: e };
             fits[1] = { ...anode, lower: e };
-            details.push("Eₖₒᵣᵣ " + show(e) + " V", "jₖₒᵣᵣ " + show(10 ** logJ) + " A/cm²");
+            details.push("Eₖₒᵣᵣ " + show(e * 1000) + " mV", "jₖₒᵣᵣ " + show(10 ** logJ) + " A/cm²");
           } else details.push("Der Schnittpunkt liegt außerhalb des Bereichs zwischen den Fitfenstern.");
         } else details.push("Je Zweig mindestens drei Punkte mit passendem Vorzeichen und passender Steigung auswählen.");
       }
@@ -293,6 +305,7 @@ if (typeof document !== "undefined") {
       get("status").textContent = file.name + " · " + curve.type + " · " + curve.points.length + " Messpunkte";
       get("analysis").hidden = false;
       reset();
+      applyAutomatic();
     } catch (error) {
       if (version === loadVersion) get("status").textContent = error.message;
     }
@@ -307,45 +320,107 @@ if (typeof document !== "undefined") {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  get("mode").addEventListener("change", reset);
+  get("mode").addEventListener("change", () => { reset(); applyAutomatic(); });
   get("reset").addEventListener("click", reset);
   get("headerArea").addEventListener("click", () => {
     get("areaUnit").value = "cm²";
     get("area").value = curve.suggestedArea;
     render();
+    applyAutomatic();
   });
-  get("findTafel").addEventListener("click", () => {
-    const ocp = number("ocp");
+
+  function applyAutomatic() {
+    const status = get("autoStatus");
+    status.textContent = "";
+    if (!get("automatic").checked) return;
+    if (!polar()) {
+      const tail = number("tail") / 100;
+      if (!(tail > 0 && tail <= 1)) {
+        status.textContent = "Gib einen Anteil von 1 bis 100 % ein.";
+        return;
+      }
+      const [start, end] = extent(curve.points, point => point.t);
+      get("lower").value = end - (end - start) * tail;
+      get("upper").value = end;
+      status.textContent = "Ruhepotential und Drift aus dem letzten Abschnitt. Das Zeitfenster bleibt editierbar.";
+      render();
+      return;
+    }
+
+    const branch = curve.points.filter(point => point.index >= number("first") && point.index <= number("last"));
+    const crossings = [];
+    let previous;
+    for (const point of branch) {
+      if (point.i === 0) continue;
+      if (previous && Math.sign(previous.i) !== Math.sign(point.i)) {
+        crossings.push(previous.e - previous.i * (point.e - previous.e) / (point.i - previous.i));
+      }
+      previous = point;
+    }
+    const reference = volts("ocp");
+    const center = log() && Number.isFinite(reference) ? reference :
+      crossings.length === 1 ? crossings[0] : NaN;
+    if (!Number.isFinite(center)) {
+      status.textContent = "Kein eindeutiger Stromnulldurchgang. Begrenze die Messpunktnummern auf einen Zweig" +
+        (log() ? " oder gib das OCP ein." : ".");
+      return;
+    }
+    if (!log()) {
+      const halfWidth = volts("linearWidth");
+      if (!(halfWidth > 0)) {
+        status.textContent = "Gib eine positive Breite für das Fitfenster ein.";
+        return;
+      }
+      get("lower").value = (center - halfWidth) * 1000;
+      get("upper").value = (center + halfWidth) * 1000;
+      status.textContent = "Fitfenster um den interpolierten Stromnulldurchgang. Prüfe den linearen Verlauf.";
+      render();
+      return;
+    }
+
+    const ocp = center;
     const zone = number("zone") / 1000;
     const width = number("segment") / 1000;
-    const status = get("autoStatus");
     if (!(area() > 0 && factor() && Number.isFinite(ocp) && width > 0 && zone > width)) {
-      status.textContent = "Fläche und OCP eingeben. Die Segmentbreite muss kleiner als die Suchzone sein.";
+      status.textContent = "Gib die Fläche an. Die Segmentbreite muss kleiner als die Suchzone sein.";
       return;
     }
     const find = (min, max, sign) => {
       const points = selected.filter(point => point.i * sign > 0 && point.e >= min && point.e <= max);
-      let best;
+      const candidates = [];
       for (const { e: start } of points) {
         if (start + width > max + 1e-12) continue;
         const fit = tafelFit(points, start, start + width, sign, y);
-        if (fit && (!best || fit.r2 > best.r2)) best = fit;
+        if (fit) candidates.push(fit);
       }
-      return best;
+      return candidates.sort((a, b) => b.r2 - a.r2);
     };
-    const cathode = find(ocp - zone, ocp, -1);
-    const anode = find(ocp, ocp + zone, 1);
-    if (!cathode || !anode) {
-      status.textContent = "In der Auswahl wurden keine zwei geeigneten Segmente gefunden.";
+    const cathodes = find(ocp - zone, ocp, -1);
+    const anodes = find(ocp, ocp + zone, 1);
+    let best;
+    for (const cathode of cathodes) {
+      if (best && cathode.r2 + anodes[0].r2 <= best.score) break;
+      const anode = anodes.find(candidate => tafelIntersection(cathode, candidate));
+      if (!anode) continue;
+      const score = cathode.r2 + anode.r2;
+      if (!best || score > best.score) best = { cathode, anode, score };
+    }
+    if (!best) {
+      status.textContent = "Keine zwei Segmente mit Schnittpunkt zwischen den Fitfenstern gefunden. Passe Suchzone oder Segmentbreite an.";
       return;
     }
-    for (const [prefix, fit] of [["c", cathode], ["a", anode]]) {
-      get(prefix + "Min").value = fit.lower;
-      get(prefix + "Max").value = fit.upper;
+    for (const [prefix, fit] of [["c", best.cathode], ["a", best.anode]]) {
+      get(prefix + "Min").value = fit.lower * 1000;
+      get(prefix + "Max").value = fit.upper * 1000;
     }
     status.textContent = "Fenster nach R² vorgeschlagen. Prüfe, ob beide Segmente im Tafelbereich liegen.";
     render();
-  });
+  }
+  get("runAutomatic").addEventListener("click", applyAutomatic);
+  get("automatic").addEventListener("change", () => { render(); applyAutomatic(); });
+  for (const id of ["tail", "linearWidth", "ocp", "zone", "segment", "area", "areaUnit", "currentUnit"]) {
+    get(id).addEventListener("change", applyAutomatic);
+  }
   for (const id of ["lower", "upper", "first", "last", "view", "currentUnit", "area", "areaUnit",
     "betaA", "betaC", "cMin", "cMax", "aMin", "aMax", "passivation", "transpassive", "passive", "limiting"]) {
     get(id).addEventListener("input", render);
@@ -353,9 +428,9 @@ if (typeof document !== "undefined") {
   get("csv").addEventListener("click", () => {
     const hasCurrent = curve.type === "EIT";
     const unit = value("currentUnit") || "Dateieinheit";
-    const rows = [["Messpunkt", "Zeit (s)", "Potential (V)", ...(hasCurrent ? ["Strom (" + unit + ")"] : [])]];
+    const rows = [["Messpunkt", "Zeit (s)", "Potential (mV)", ...(hasCurrent ? ["Strom (" + unit + ")"] : [])]];
     for (const point of selected) {
-      rows.push([point.index, point.t, point.e, ...(hasCurrent ? [point.i] : [])]);
+      rows.push([point.index, point.t, point.e * 1000, ...(hasCurrent ? [point.i] : [])]);
     }
     download(new Blob([rows.map(row => row.join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }), "csv");
   });
