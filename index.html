@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="eis-runtime" content="browser">
+<title>EIS Fit · Laborwerkzeug</title>
+<style>
+:root{font:16px system-ui;color:#132c3c;background:#eef4f7;--blue:#085b79;--muted:#4b6473}
+*{box-sizing:border-box}body{margin:0}header{background:#123548;color:white;padding:30px max(20px,calc((100% - 1140px)/2));white-space:normal}header p{margin:0;color:#bfe7ec}h1{margin:.2em 0;font-size:2.7rem}main{max-width:1180px;margin:auto;padding:22px}section{background:white;border:1px solid #d7e3ea;border-radius:14px;padding:20px;margin-bottom:16px}h2,h3{margin:0 0 12px}p{line-height:1.55}button,input,select{font:inherit}button{background:var(--blue);color:white;border:0;padding:9px 15px;border-radius:8px;cursor:pointer}button:disabled{opacity:.55;cursor:wait}label{font-weight:600}.actions,.plots{display:flex;gap:14px;flex-wrap:wrap;align-items:center}.plots figure{flex:1 1 420px;margin:0}.plots svg{width:100%;height:auto}table{border-collapse:collapse;width:100%}td,th{text-align:left;border-bottom:1px solid #d7e3ea;padding:8px}small,#status{color:var(--muted)}details{margin-top:12px}summary{cursor:pointer}figure h3{font-size:1rem}#results[hidden]{display:none}
+</style>
+<header><p>LABORWERKZEUG · ELEKTROCHEMIE</p><h1>EIS Fit</h1><p>Impedanzspektren laden, Ersatzschaltbilder vergleichen und Fits exportieren.</p></header>
+<main>
+<section><h2>1 · Messdatei auswählen</h2>
+<div class="actions"><label>Datei <input id="file" type="file" accept=".ism,.csv"></label>
+<button id="run">Datei fitten</button><button id="demo">Beispiel fitten</button></div>
+<fieldset style="margin:16px 0;border:1px solid #d7e3ea;border-radius:8px;padding:12px">
+<legend>Modellkomplexität</legend>
+<div class="actions">
+<label><input type="checkbox" name="component" value="R" checked> <span aria-hidden="true">─▭─</span> Widerstand (R)</label>
+<label><input type="checkbox" name="component" value="C" checked> <span aria-hidden="true">─││─</span> Kondensator (C)</label>
+<label><input type="checkbox" name="component" value="Q" checked> <span aria-hidden="true">─│╱─</span> CPE (Q)</label>
+<label><input type="checkbox" name="component" value="L"> <span aria-hidden="true">─∿∿─</span> Induktivität (L)</label>
+<label><input type="checkbox" name="component" value="La"> Modifizierte Induktivität (La)</label>
+<label><input type="checkbox" name="component" value="W"> Warburg (W)</label>
+<label><input type="checkbox" name="component" value="Wo"> Warburg offen (Wo)</label>
+<label><input type="checkbox" name="component" value="Ws"> Warburg kurzgeschlossen (Ws)</label>
+<label><input type="checkbox" name="component" value="G"> Gerischer (G)</label>
+<label>Max. Bauteile <select id="limit"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option value="7">Automatisch (bis 7)</option></select></label>
+</div>
+<p style="margin-bottom:0"><small id="available" aria-live="polite"></small></p>
+</fieldset>
+<p id="status" role="status">Zahner ISM oder CSV. Die Berechnung läuft auf diesem Rechner.</p>
+<details><summary>CSV-Format</summary><p>UTF-8, Komma als Trennzeichen, Dezimalpunkt. Spalten <code>frequency_Hz,Zreal_ohm,Zimag_ohm</code>. Kapazitive Impedanz hat einen negativen Imaginärteil.</p></details></section>
+<section id="results" hidden>
+<h2>2 · Modelle vergleichen</h2><table><thead><tr><th>Schaltung</th><th>Bauteile</th><th>Parameter</th><th>RMS</th><th>ΔAICc</th><th>Fitstatus</th></tr></thead><tbody id="rows"></tbody></table>
+<p><small>Der komplexe RMS gewichtet jeden Frequenzpunkt relativ zu seinem Impedanzbetrag. ΔAICc berücksichtigt die Anzahl der Fitparameter. Der Modellvergleich ersetzt keine Prüfung der Messqualität.</small></p>
+<div class="actions"><label>Fit anzeigen <select id="model"></select></label><button id="export">Fit als CSV exportieren</button></div>
+<p id="parameters"></p>
+<figure style="margin:16px 0"><h3>Ersatzschaltbild</h3><div id="circuit" style="overflow:auto;padding:12px;border:1px solid #d7e3ea;border-radius:8px"></div></figure>
+<div class="plots" id="plots"></div>
+<p><small>Punkte zeigen Messwerte, Linien den Fit. Im Bode-Diagramm steht Türkis für |Z| und Blau für |Phase|.</small></p>
+</section>
+</main>
+<script src="circuit-diagram.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let result;
+let running = false;
+let worker;
+async function browserFit(file, suffix, allowed, limit, example) {
+  if (file && file.size > 2_000_000) throw new Error("Datei zu groß (maximal 2 MB).");
+  const raw = file ? await file.arrayBuffer() : new ArrayBuffer(0);
+  worker ??= new Worker("fit-worker.js");
+  return new Promise((resolve, reject) => {
+    worker.onmessage = ({data}) => {
+      if (data.status) { $("status").textContent = data.status; return; }
+      if (data.error) reject(new Error(data.error));
+      else resolve(data);
+    };
+    worker.onerror = () => {
+      worker.terminate();
+      worker = undefined;
+      reject(new Error("Das Rechenmodul konnte nicht geladen werden. Prüfe die Internetverbindung."));
+    };
+    worker.postMessage({raw, suffix: suffix || "", components: allowed.join(","), limit, example}, [raw]);
+  });
+}
+const components = [...document.querySelectorAll('input[name="component"]')];
+function options() {
+  const allowed = components.filter(c => c.checked).map(c => c.value);
+  const limit = Number($("limit").value);
+  return {allowed, limit};
+}
+function refresh() {
+  const {allowed, limit} = options();
+  $("available").textContent = allowed.length ? `Erlaubt: ${allowed.join(", ")} · bis ${limit} Bauteile in Reihen- und Parallelschaltungen. Typen dürfen sich wiederholen.` :
+    "Wähle mindestens einen Bauteiltyp.";
+  $("run").disabled = $("demo").disabled = running || !allowed.length;
+}
+for (const control of [...components, $("limit")]) {
+  control.addEventListener("change", () => {
+    $("results").hidden = true;
+    $("status").textContent = "Auswahl geändert. Starte den Fit erneut.";
+    refresh();
+  });
+}
+refresh();
+async function run(example) {
+  const {allowed, limit} = options();
+  if (!allowed.length || running) return;
+  const file = $("file").files[0];
+  if (!example && !file) { $("status").textContent = "Bitte zuerst eine Datei auswählen."; return; }
+  running = true;
+  for (const control of [...components, $("limit")]) control.disabled = true;
+  refresh();
+  $("results").hidden = true;
+  $("status").textContent = "Fit läuft …";
+  try {
+    const suffix = file?.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+    if (document.querySelector('meta[name="eis-runtime"][content="browser"]')) {
+      result = await browserFit(example ? null : file, suffix, allowed, limit, example);
+    } else {
+      const headers = {"X-Components":allowed.join(","), "X-Element-Limit":String(limit)};
+      if (!example) headers["X-Spectrum-Type"] = suffix;
+      const response = await fetch(example ? "/demo" : "/fit", {method:"POST", headers, body:example ? null : file});
+      result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+    }
+    if (!result.fits.length) throw new Error("Für diese Messpunkte wurde kein auswertbarer Fit gefunden.");
+    $("rows").innerHTML = result.fits.map(f => `<tr><td>${f.model}</td><td>${f.elements}</td><td>${Object.keys(f.parameters).length}</td><td>${f.rms.toFixed(3)} %</td><td>${(f.aicc-result.fits[0].aicc).toFixed(1)}</td><td>${f.limited ? "Parameter prüfen" : "Numerisch stabil"}</td></tr>`).join("");
+    $("model").replaceChildren(...result.fits.map(f => new Option(f.model, f.model)));
+    show();
+    $("results").hidden = false;
+    $("status").textContent = (example ? "Synthetisches Beispiel" : file.name) + " · " + result.f.length + " Frequenzpunkte";
+  } catch (error) { $("status").textContent = error.message; }
+  finally {
+    running = false;
+    for (const control of [...components, $("limit")]) control.disabled = false;
+    refresh();
+  }
+}
+function chart(title, xLabel, yLabel, x, y, fitX, fitY) {
+  const [xmin,xmax] = [Math.min(...x,...fitX),Math.max(...x,...fitX)];
+  const [ymin,ymax] = [Math.min(...y,...fitY),Math.max(...y,...fitY)];
+  const px = v => 74+422*(v-xmin)/(xmax-xmin || 1);
+  const py = v => 210-185*(v-ymin)/(ymax-ymin || 1);
+  let grid = "";
+  for(let i=0;i<=4;i++) {
+    const a=xmin+(xmax-xmin)*i/4,b=ymin+(ymax-ymin)*i/4;
+    grid += `<path d="M${px(a)} 25V210 M74 ${py(b)}H496" stroke="#d7e3ea"/><text x="${px(a)}" y="229" text-anchor="middle">${a.toPrecision(3)}</text><text x="67" y="${py(b)+4}" text-anchor="end">${b.toPrecision(3)}</text>`;
+  }
+  return `<figure><h3>${title}</h3><svg viewBox="0 0 510 258" role="img" aria-label="${title}" font-size="11">${grid}<polyline fill="none" stroke="#007d79" stroke-width="2.2" points="${fitX.map((v,i)=>px(v)+","+py(fitY[i])).join(" ")}"/>${x.map((v,i)=>`<circle cx="${px(v)}" cy="${py(y[i])}" r="2.5" fill="#163849"/>`).join("")}<text x="285" y="251" text-anchor="middle">${xLabel}</text><text transform="translate(14 117) rotate(-90)" text-anchor="middle">${yLabel}</text></svg></figure>`;
+}
+function bode(measurement, fit) {
+  const width = 700, left = 87, right = 620, top = 25, bottom = 232;
+  const f = measurement.f.map(Math.log10);
+  const magnitude = data => data.real.map((v,i) => Math.log10(Math.max(Number.MIN_VALUE,Math.hypot(v,data.imag[i]))));
+  const phase = data => data.real.map((v,i) => Math.abs(Math.atan2(data.imag[i],v)*180/Math.PI));
+  const z = magnitude(measurement), zfit = magnitude(fit);
+  const angle = phase(measurement), angleFit = phase(fit);
+  const zmin = Math.floor(Math.min(...z,...zfit)), zmax = Math.max(zmin+1,Math.ceil(Math.max(...z,...zfit)));
+  const pmax = Math.max(90,30*Math.ceil(Math.max(...angle,...angleFit)/30));
+  const px = value => left + (right-left)*(value-f[0])/(f.at(-1)-f[0] || 1);
+  const zy = value => bottom - (bottom-top)*(value-zmin)/(zmax-zmin);
+  const py = value => bottom - (bottom-top)*value/pmax;
+  const teal = "#00736f", blue = "#3455a1";
+  const text = (x,y,value,color="#132c3c",anchor="middle") => `<text x="${x}" y="${y}" fill="${color}" text-anchor="${anchor}">${value}</text>`;
+  const tick = exp => exp === 0 ? "1" : `10${String(exp).replace(/[-0-9]/g, c => "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"["-0123456789".indexOf(c)])}`;
+  let axes = `<path d="M${left} ${top}V${bottom}H${right}V${top}" fill="none" stroke="#9aafbb"/>`;
+  const fstep = Math.max(1,Math.ceil((f.at(-1)-f[0])/8));
+  for (let e=Math.ceil(f[0]);e<=f.at(-1);e+=fstep) {
+    const x=px(e);
+    axes += `<path d="M${x} ${top}V${bottom}" stroke="#d7e3ea"/>` + text(x,bottom+17,tick(e));
+  }
+  if (Math.ceil(f[0]) > f.at(-1)) {
+    const fmt = value => Number(value.toPrecision(3)).toString();
+    axes += text(left,bottom+17,fmt(measurement.f[0])) + text(right,bottom+17,fmt(measurement.f.at(-1)));
+  }
+  for (let e=zmin;e<=zmax;e+=Math.max(1,Math.ceil((zmax-zmin)/7))) {
+    const y=zy(e);
+    axes += `<path d="M${left} ${y}H${right}" stroke="#d7e3ea"/>` + text(left-8,y+4,tick(e),teal,"end");
+  }
+  for (let p=0;p<=pmax;p+=30) {
+    const y=py(p);
+    axes += `<path d="M${right} ${y}h5" stroke="${blue}"/>` + text(right+9,y+4,p,blue,"start");
+  }
+  function trace(observed, predicted, y, color, dashed) {
+    return `<polyline fill="none" stroke="${color}" stroke-width="2" ${dashed ? 'stroke-dasharray="5 3"' : ''} points="${f.map((v,i)=>px(v)+","+y(predicted[i])).join(" ")}"/>`
+      + f.map((v,i)=>`<circle cx="${px(v)}" cy="${y(observed[i])}" r="2.4" fill="${dashed ? 'white' : color}" stroke="${color}"/>`).join("");
+  }
+  return `<figure><h3>Bode</h3><svg viewBox="0 0 ${width} 282" role="img" aria-label="Bode-Diagramm mit Impedanzbetrag links und Phasenbetrag rechts" font-size="12">${axes}${trace(z,zfit,zy,teal,false)}${trace(angle,angleFit,py,blue,true)}
+    ${text((left+right)/2,270,"Frequenz / Hz")}<text fill="${teal}" transform="translate(24 129) rotate(-90)" text-anchor="middle">|Z| / Ω</text><text fill="${blue}" transform="translate(679 129) rotate(90)" text-anchor="middle">|Phase| / °</text></svg></figure>`;
+}
+const selected = () => result.fits.find(f => f.model === $("model").value);
+function show() {
+  const fit = selected();
+  $("circuit").replaceChildren(drawCircuit(fit.topology, fit.parameters));
+  $("parameters").textContent = Object.entries(fit.parameters).map(([k,v])=>k+" = "+v.toPrecision(4)+(k.startsWith("R")?" Ω":k==="C"?" F":"")).join("  ·  ");
+  $("plots").innerHTML = bode(result,fit) + chart("Nyquist","Re(Z) / Ω","−Im(Z) / Ω",result.real,result.imag.map(v=>-v),fit.real,fit.imag.map(v=>-v));
+}
+$("run").onclick = () => run(false);
+$("demo").onclick = () => run(true);
+$("model").onchange = show;
+$("export").onclick = () => {
+  const fit = selected();
+  const lines = result.f.map((f,i)=>[f,result.real[i],result.imag[i],fit.real[i],fit.imag[i]].join(","));
+  const url = URL.createObjectURL(new Blob(["frequency_Hz,Zreal_ohm,Zimag_ohm,fit_real_ohm,fit_imag_ohm\n"+lines.join("\n")],{type:"text/csv"}));
+  const a = document.createElement("a"); a.href=url; a.download="eis-fit.csv"; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+</script>
+</html>
