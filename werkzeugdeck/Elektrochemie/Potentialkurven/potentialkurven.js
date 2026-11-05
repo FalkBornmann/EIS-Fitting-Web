@@ -40,7 +40,9 @@ function tafelFit(points, lower, upper, sign, ordinate) {
   if (window.length < 3) return null;
   const fit = regression(window, point => point.e, ordinate);
   if (!(fit.slope * sign > 0) || !Number.isFinite(fit.r2)) return null;
-  return { ...fit, lower, upper, beta: 1000 / Math.abs(fit.slope) };
+  const nearest = window.reduce((edge, point) => sign > 0 ? Math.min(edge, point.e) : Math.max(edge, point.e),
+    sign > 0 ? Infinity : -Infinity);
+  return { ...fit, lower, upper, nearest, beta: 1000 / Math.abs(fit.slope) };
 }
 
 function tafelIntersection(cathode, anode) {
@@ -63,6 +65,7 @@ if (typeof document !== "undefined") {
   const canvas = get("plot");
   const ctx = canvas.getContext("2d");
   let curve, selected, fileName;
+  let automaticWindows = new Map();
   let loadVersion = 0;
   const polar = () => value("mode") !== "time";
   const log = () => value("mode") === "tafel";
@@ -267,6 +270,9 @@ if (typeof document !== "undefined") {
             fits[0] = { ...cathode, upper: e };
             fits[1] = { ...anode, lower: e };
             details.push("Eₖₒᵣᵣ " + show(e * 1000) + " mV", "jₖₒᵣᵣ " + show(10 ** logJ) + " A/cm²");
+            const separation = (anode.slope - cathode.slope) *
+              Math.min(e - cathode.nearest, anode.nearest - e);
+            if (separation < 1) details.push("Tafel-Kriterium: Der Gegenast trägt modelliert mehr als 10 % bei.");
           } else details.push("Der Schnittpunkt liegt außerhalb des Bereichs zwischen den Fitfenstern.");
         } else details.push("Je Zweig mindestens drei Punkte mit passendem Vorzeichen und passender Steigung auswählen.");
       }
@@ -301,6 +307,7 @@ if (typeof document !== "undefined") {
       get("headerArea").textContent = show(curve.suggestedArea) + " cm² aus Dateikopf übernehmen";
       get("ocp").value = "";
       get("autoStatus").textContent = "";
+      automaticWindows = new Map();
       for (const id of ["cMin", "cMax", "aMin", "aMax", "passivation", "transpassive", "passive", "limiting"]) get(id).value = "";
       get("status").textContent = file.name + " · " + curve.type + " · " + curve.points.length + " Messpunkte";
       get("analysis").hidden = false;
@@ -333,6 +340,13 @@ if (typeof document !== "undefined") {
     const status = get("autoStatus");
     status.textContent = "";
     if (!get("automatic").checked) return;
+    if (log()) {
+      for (const [id, previous] of automaticWindows) {
+        if (number(id) === previous) get(id).value = "";
+      }
+      automaticWindows.clear();
+      render();
+    }
     if (!polar()) {
       const tail = number("tail") / 100;
       if (!(tail > 0 && tail <= 1)) {
@@ -391,7 +405,7 @@ if (typeof document !== "undefined") {
       for (const { e: start } of points) {
         if (start + width > max + 1e-12) continue;
         const fit = tafelFit(points, start, start + width, sign, y);
-        if (fit) candidates.push(fit);
+        if (fit && fit.r2 >= 0.95) candidates.push(fit);
       }
       return candidates.sort((a, b) => b.r2 - a.r2);
     };
@@ -400,20 +414,30 @@ if (typeof document !== "undefined") {
     let best;
     for (const cathode of cathodes) {
       if (best && cathode.r2 + anodes[0].r2 <= best.score) break;
-      const anode = anodes.find(candidate => tafelIntersection(cathode, candidate));
+      const anode = anodes.find(candidate => {
+        const intersection = tafelIntersection(cathode, candidate);
+        if (!intersection) return false;
+        const separation = (candidate.slope - cathode.slope) *
+          Math.min(intersection.e - cathode.nearest, candidate.nearest - intersection.e);
+        return separation >= 1;
+      });
       if (!anode) continue;
       const score = cathode.r2 + anode.r2;
       if (!best || score > best.score) best = { cathode, anode, score };
     }
     if (!best) {
-      status.textContent = "Keine zwei Segmente mit Schnittpunkt zwischen den Fitfenstern gefunden. Passe Suchzone oder Segmentbreite an.";
+      status.textContent = "Keine geeigneten Tafel-Fenster. Die Automatik verlangt R² ≥ 0,95 je Zweig, einen Schnittpunkt zwischen den Fenstern und höchstens 10 % modellierten Gegenstrom. Prüfe die Kurve und passe Suchzone oder Segmentbreite an.";
       return;
     }
     for (const [prefix, fit] of [["c", best.cathode], ["a", best.anode]]) {
       get(prefix + "Min").value = fit.lower * 1000;
       get(prefix + "Max").value = fit.upper * 1000;
+      for (const suffix of ["Min", "Max"]) {
+        const id = prefix + suffix;
+        automaticWindows.set(id, number(id));
+      }
     }
-    status.textContent = "Fenster nach R² vorgeschlagen. Prüfe, ob beide Segmente im Tafelbereich liegen.";
+    status.textContent = "Tafel-Fenster vorgeschlagen (R² ≥ 0,95 je Zweig, modellierter Gegenstrom ≤ 10 %). Prüfe die Fenster auf Aktivierungskontrolle.";
     render();
   }
   get("runAutomatic").addEventListener("click", applyAutomatic);
