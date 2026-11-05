@@ -7,3 +7,5 @@
 3. Fits vergleichen, Bauteilwerte im Schaltbild lesen und Ergebnisse als CSV exportieren.
 
 Die App verarbeitet Messdateien im Browser. Beim ersten Fit lädt sie die Rechenbibliothek.
+
+[Werkzeugdeck mit Potentialkurven öffnen](https://falkbornmann.github.io/EIS-Fitting-Web/werkzeugdeck/)
