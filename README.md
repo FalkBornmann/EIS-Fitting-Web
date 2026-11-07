@@ -1,11 +1,9 @@
-# EIS-Fitting
+# Historischer Werkzeugdeck-Zugang
 
-**[App öffnen](https://falkbornmann.github.io/EIS-Fitting-Web/)** · Keine Installation nötig.
+Dieses Repository ist archiviert. Die bisherigen Apps wurden in eigene Repositories überführt.
 
-1. Zahner-ISM oder CSV laden oder **Beispiel fitten** wählen.
-2. Erlaubte Bauteile und maximale Bauteilanzahl festlegen.
-3. Fits vergleichen, Bauteilwerte im Schaltbild lesen und Ergebnisse als CSV exportieren.
+Aktueller Katalog: https://github.com/FalkBornmann/Werkzeugdeck
 
-Die App verarbeitet Messdateien im Browser. Beim ersten Fit lädt sie die Rechenbibliothek.
+Website: https://werkzeugdeck.pages.dev/
 
-[Werkzeugdeck mit Potentialkurven öffnen](https://falkbornmann.github.io/EIS-Fitting-Web/werkzeugdeck/)
+Die HTML-Seiten leiten alte Lesezeichen weiter. Die frühere Implementierung bleibt in der Git-Historie erhalten.
